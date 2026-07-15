@@ -1,0 +1,211 @@
+{
+  "database": "SQLite",
+  "schema_version": 1,
+  "pragmas": {
+    "foreign_keys": "ON",
+    "journal_mode": "WAL",
+    "busy_timeout_ms": 5000,
+    "user_version": 1
+  },
+  "tables": [
+    {
+      "name": "users",
+      "purpose": "Owns each user's single board and supports additional users in the future.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "constraints": ["PRIMARY KEY", "AUTOINCREMENT"]
+        },
+        {
+          "name": "username",
+          "type": "TEXT",
+          "constraints": ["NOT NULL", "UNIQUE"]
+        },
+        {
+          "name": "password_hash",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"]
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        }
+      ]
+    },
+    {
+      "name": "boards",
+      "purpose": "Stores the single Kanban board owned by a user.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "constraints": ["PRIMARY KEY", "AUTOINCREMENT"]
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER",
+          "constraints": ["NOT NULL", "UNIQUE"],
+          "references": "users(id) ON DELETE CASCADE"
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"]
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        },
+        {
+          "name": "updated_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        }
+      ]
+    },
+    {
+      "name": "board_columns",
+      "purpose": "Stores the five fixed board columns; only title is user-editable.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "constraints": ["PRIMARY KEY", "AUTOINCREMENT"]
+        },
+        {
+          "name": "board_id",
+          "type": "INTEGER",
+          "constraints": ["NOT NULL"],
+          "references": "boards(id) ON DELETE CASCADE"
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"]
+        },
+        {
+          "name": "position",
+          "type": "INTEGER",
+          "constraints": ["NOT NULL", "CHECK (position BETWEEN 0 AND 4)"]
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        },
+        {
+          "name": "updated_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        }
+      ],
+      "table_constraints": ["UNIQUE (board_id, position)"],
+      "application_rules": [
+        "Initialization creates exactly five rows at positions 0 through 4.",
+        "No API route creates, deletes, or reorders columns.",
+        "Only title and updated_at may be changed after initialization."
+      ]
+    },
+    {
+      "name": "cards",
+      "purpose": "Stores ordered Kanban cards within a column.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "constraints": ["PRIMARY KEY", "AUTOINCREMENT"]
+        },
+        {
+          "name": "column_id",
+          "type": "INTEGER",
+          "constraints": ["NOT NULL"],
+          "references": "board_columns(id) ON DELETE CASCADE"
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"]
+        },
+        {
+          "name": "details",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "''"
+        },
+        {
+          "name": "position",
+          "type": "INTEGER",
+          "constraints": ["NOT NULL", "CHECK (position >= 0)"]
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        },
+        {
+          "name": "updated_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        }
+      ],
+      "table_constraints": ["UNIQUE (column_id, position)"],
+      "indexes": ["INDEX cards_column_id ON cards(column_id)"]
+    },
+    {
+      "name": "chat_messages",
+      "purpose": "Stores the ordered AI conversation history for a board.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "constraints": ["PRIMARY KEY", "AUTOINCREMENT"]
+        },
+        {
+          "name": "board_id",
+          "type": "INTEGER",
+          "constraints": ["NOT NULL"],
+          "references": "boards(id) ON DELETE CASCADE"
+        },
+        {
+          "name": "role",
+          "type": "TEXT",
+          "constraints": ["NOT NULL", "CHECK (role IN ('user', 'assistant'))"]
+        },
+        {
+          "name": "content",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"]
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "constraints": ["NOT NULL"],
+          "default": "CURRENT_TIMESTAMP"
+        }
+      ],
+      "indexes": ["INDEX chat_messages_board_id_id ON chat_messages(board_id, id)"]
+    }
+  ],
+  "relationships": [
+    "users 1 -> 1 boards",
+    "boards 1 -> 5 board_columns",
+    "board_columns 1 -> many cards",
+    "boards 1 -> many chat_messages"
+  ],
+  "initial_data": {
+    "user": "Create the MVP user named 'user' with a salted password hash.",
+    "board": "Create one board for the MVP user titled 'Kanban Studio'.",
+    "columns": ["Backlog", "Discovery", "In Progress", "Review", "Done"],
+    "cards": "Copy the eight existing demo cards from frontend/src/lib/kanban.ts in their current order."
+  }
+}

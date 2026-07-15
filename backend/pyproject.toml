@@ -1,0 +1,25 @@
+[project]
+name = "project-management-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Project Management MVP"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.139,<1",
+    "httpx>=0.28,<1",
+    "uvicorn[standard]>=0.51,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1,<10",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "live: calls a paid external service and requires explicit opt-in",
+]
+
+[tool.uv]
+package = false

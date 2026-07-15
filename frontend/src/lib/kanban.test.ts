@@ -22,4 +22,12 @@ describe("moveCard", () => {
     expect(result[0].cardIds).toEqual(["card-2"]);
     expect(result[1].cardIds).toEqual(["card-3", "card-1"]);
   });
+
+  it("returns the original columns for an unknown card", () => {
+    expect(moveCard(baseColumns, "missing", "card-1")).toBe(baseColumns);
+  });
+
+  it("keeps the order when a card is dropped on itself", () => {
+    expect(moveCard(baseColumns, "card-1", "card-1")).toBe(baseColumns);
+  });
 });

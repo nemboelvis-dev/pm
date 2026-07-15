@@ -11,11 +11,15 @@ export type Column = {
 };
 
 export type BoardData = {
+  id: string;
+  title: string;
   columns: Column[];
   cards: Record<string, Card>;
 };
 
 export const initialData: BoardData = {
+  id: "demo-board",
+  title: "Kanban Studio",
   columns: [
     { id: "col-backlog", title: "Backlog", cardIds: ["card-1", "card-2"] },
     { id: "col-discovery", title: "Discovery", cardIds: ["card-3"] },
