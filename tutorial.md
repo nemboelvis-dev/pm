@@ -10,7 +10,7 @@ The finished application lets a user:
 - view one persistent Kanban board;
 - rename the five fixed columns;
 - create, edit, delete, reorder, and move cards;
-- ask an AI assistant to create, edit, or move several cards at once;
+- ask an AI assistant to create, edit, move, or delete several cards at once;
 - keep the login, board, and chat history after refreshing or restarting the browser; and
 - run the entire application locally in one Docker container.
 

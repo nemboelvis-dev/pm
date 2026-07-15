@@ -116,6 +116,12 @@ def test_chat_sends_board_scoped_history_and_strict_schema(
     assert set(schema["required"]) == {"message", "operations"}
     operation_schema = schema["$defs"]["CardOperation"]
     assert operation_schema["additionalProperties"] is False
+    assert operation_schema["properties"]["type"]["enum"] == [
+        "create",
+        "edit",
+        "move",
+        "delete",
+    ]
     assert set(operation_schema["required"]) == {
         "type",
         "card_id",
@@ -202,6 +208,83 @@ def test_chat_applies_multiple_card_operations_and_returns_the_board(
         ("user", "Update my board"),
         ("assistant", "Created, edited, and moved the cards."),
     ]
+
+
+def test_chat_deletes_and_moves_cards_when_requested(
+    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initial_board = authenticated_client.get("/api/board").json()
+    backlog = initial_board["columns"][0]
+    create_response = authenticated_client.post(
+        "/api/cards",
+        json={
+            "column_id": int(backlog["id"]),
+            "title": "test",
+            "details": "Delete through the assistant.",
+        },
+    )
+    assert create_response.status_code == 201
+    created_board = create_response.json()
+    test_card_id = next(
+        card_id
+        for card_id, card in created_board["cards"].items()
+        if card["title"] == "test"
+    )
+
+    board_before = created_board
+    source_column = board_before["columns"][2]
+    target_column = board_before["columns"][3]
+    moved_card_id = next(
+        card_id
+        for card_id in source_column["cardIds"]
+        if board_before["cards"][card_id]["title"] == "Design card layout"
+    )
+    moved_card = board_before["cards"][moved_card_id]
+
+    async def fake_completion(*_: object, **__: object) -> str:
+        return ai_response(
+            "I deleted test and moved Design card layout to Review.",
+            [
+                {
+                    "type": "delete",
+                    "card_id": int(test_card_id),
+                    "column_id": int(backlog["id"]),
+                    "position": len(backlog["cardIds"]),
+                    "title": "test",
+                    "details": "Delete through the assistant.",
+                },
+                {
+                    "type": "move",
+                    "card_id": int(moved_card_id),
+                    "column_id": int(target_column["id"]),
+                    "position": len(target_column["cardIds"]),
+                    "title": moved_card["title"],
+                    "details": moved_card["details"],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(chat, "create_completion", fake_completion)
+
+    response = authenticated_client.post(
+        "/api/chat",
+        json={
+            "message": (
+                'Delete card "test" from Backlog. Move "Design card layout" '
+                'from "In Progress" to "Review".'
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert test_card_id not in data["board"]["cards"]
+    assert all(
+        test_card_id not in column["cardIds"] for column in data["board"]["columns"]
+    )
+    assert moved_card_id not in data["board"]["columns"][2]["cardIds"]
+    assert data["board"]["columns"][3]["cardIds"][-1] == moved_card_id
+    assert data["board"]["cards"][moved_card_id] == moved_card
 
 
 def test_invalid_ai_operation_rolls_back_all_changes_and_messages(

@@ -16,7 +16,7 @@ This directory contains the Kanban frontend built with the Next.js App Router, R
 
 ## Existing behavior
 
-The user must sign in with `user` / `password` before seeing the board and can log out. The board has five fixed columns. A user can rename them; add, edit, or remove cards; reorder cards; and drag cards between columns. The responsive AI sidebar can create, edit, or move one or more cards through natural-language requests and refreshes the board immediately. Board changes and chat history are persisted by FastAPI and SQLite. The UI includes loading, retry, sending, and failure states. It uses dnd-kit for pointer-based sorting and the project color scheme from `globals.css`.
+The user must sign in with `user` / `password` before seeing the board and can log out. The board has five fixed columns. A user can rename them; add, edit, or remove cards; reorder cards; and drag cards between columns. The responsive AI sidebar can create, edit, move, or delete one or more cards through natural-language requests and refreshes the board immediately. Board changes and chat history are persisted by FastAPI and SQLite. The UI includes loading, retry, sending, and failure states. It uses dnd-kit for pointer-based sorting and the project color scheme from `globals.css`.
 
 ## Development rules
 

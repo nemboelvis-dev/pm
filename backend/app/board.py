@@ -149,11 +149,7 @@ def delete_card(
 ) -> Board:
     with connect() as connection:
         board_id = board_id_for_user(connection, user.username)
-        card = _owned_card(connection, board_id, card_id)
-        connection.execute("DELETE FROM cards WHERE id = ?", (card_id,))
-        remaining_ids = _card_ids(connection, card["column_id"])
-        _rewrite_positions(connection, card["column_id"], remaining_ids)
-        _touch_board(connection, board_id)
+        delete_card_record(connection, board_id, card_id)
         return read_board(connection, user.username)
 
 
@@ -211,6 +207,16 @@ def edit_card_record(
         """,
         values,
     )
+    _touch_board(connection, board_id)
+
+
+def delete_card_record(
+    connection: sqlite3.Connection, board_id: int, card_id: int
+) -> None:
+    card = _owned_card(connection, board_id, card_id)
+    connection.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+    remaining_ids = _card_ids(connection, card["column_id"])
+    _rewrite_positions(connection, card["column_id"], remaining_ids)
     _touch_board(connection, board_id)
 
 

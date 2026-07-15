@@ -100,7 +100,7 @@ export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
           Board assistant
         </h2>
         <p className="mt-2 text-xs leading-5 text-white/70">
-          Ask for card creation, edits, or moves using natural language.
+          Ask for card creation, edits, moves, or deletion using natural language.
         </p>
       </header>
 

@@ -128,7 +128,7 @@ Tests and success criteria:
 
 - [x] Include the current board, saved conversation history, and new user message in each call.
 - [x] Require a strict JSON Schema response with an assistant message and card operations.
-- [x] Validate and apply create, edit, and move operations in one SQLite transaction.
+- [x] Validate and apply create, edit, move, and delete operations in one SQLite transaction.
 - [x] Save both user and assistant chat messages.
 - [x] Receive user approval before starting Part 10.
 

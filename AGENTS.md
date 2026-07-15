@@ -7,7 +7,7 @@ This project is building a Project Management App. Key features:
 - When signed in, the user sees a Kanban board representing their project
 - The Kanban board has fixed columns that can be renamed
 - The cards on the Kanban board can be moved with drag and drop, and edited
-- There is an AI chat feature in a sidebar; the AI is able to create / edit / move one or more cards
+- There is an AI chat feature in a sidebar; the AI is able to create / edit / move / delete one or more cards
 
 ## Limitations
 

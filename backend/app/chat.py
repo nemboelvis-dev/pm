@@ -20,6 +20,7 @@ from app.board import (
     MoveCard,
     board_id_for_user,
     create_card_record,
+    delete_card_record,
     edit_card_record,
     move_card_record,
     read_board,
@@ -37,9 +38,11 @@ PROMPT_HISTORY_LIMIT = 50
 
 SYSTEM_PROMPT = """You are the board assistant for a project management app.
 Use the current board IDs exactly as provided. Card and column IDs are numeric strings;
-return them as integers in operations. You may create, edit, or move cards. You cannot
-delete cards, rename columns, or invent IDs for existing resources. Positions are
-zero-based. Return an empty operations array when no board change is needed."""
+return them as integers in operations. You may create, edit, move, or delete cards. You
+cannot rename columns or invent IDs for existing resources. Explain unsupported requests
+without returning an operation for them, and still perform any supported parts of the
+request. Positions are zero-based. Return an empty operations array when no board change
+is needed."""
 
 
 class SendMessage(BaseModel):
@@ -64,11 +67,11 @@ class ChatMessage(BaseModel):
 class CardOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["create", "edit", "move"] = Field(
+    type: Literal["create", "edit", "move", "delete"] = Field(
         description="The card operation to apply."
     )
     card_id: int | None = Field(
-        gt=0, description="Existing card ID for edit or move; otherwise null."
+        gt=0, description="Existing card ID for edit, move, or delete; otherwise null."
     )
     column_id: int | None = Field(
         gt=0, description="Target column ID for create or move; otherwise null."
@@ -82,6 +85,23 @@ class CardOperation(BaseModel):
     details: str | None = Field(
         description="Card details for create, changed details for edit, or null."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_unused_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        operation = value.copy()
+        unused_fields = {
+            "create": ("card_id", "position"),
+            "edit": ("column_id", "position"),
+            "move": ("title", "details"),
+            "delete": ("column_id", "position", "title", "details"),
+        }
+        for field in unused_fields.get(operation.get("type"), ()):
+            operation[field] = None
+        return operation
 
     @model_validator(mode="after")
     def fields_match_operation(self) -> "CardOperation":
@@ -102,11 +122,19 @@ class CardOperation(BaseModel):
                 and (self.title is not None or self.details is not None)
                 and (self.title is None or bool(self.title.strip()))
             )
-        else:
+        elif self.type == "move":
             valid = (
                 self.card_id is not None
                 and self.column_id is not None
                 and self.position is not None
+                and self.title is None
+                and self.details is None
+            )
+        else:
+            valid = (
+                self.card_id is not None
+                and self.column_id is None
+                and self.position is None
                 and self.title is None
                 and self.details is None
             )
@@ -252,7 +280,7 @@ def _apply_operation(
             cast(int, operation.card_id),
             EditCard(title=operation.title, details=operation.details),
         )
-    else:
+    elif operation.type == "move":
         move_card_record(
             connection,
             board_id,
@@ -261,6 +289,12 @@ def _apply_operation(
                 column_id=cast(int, operation.column_id),
                 position=cast(int, operation.position),
             ),
+        )
+    else:
+        delete_card_record(
+            connection,
+            board_id,
+            cast(int, operation.card_id),
         )
 
 
