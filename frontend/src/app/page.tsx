@@ -3,16 +3,19 @@
 import { useEffect, useState } from "react";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { LoginForm } from "@/components/LoginForm";
+import { RegisterForm } from "@/components/RegisterForm";
 import {
   ApiError,
   getSession,
   login,
   logout,
+  register,
   type User,
 } from "@/lib/api";
 
 export default function Home() {
   const [user, setUser] = useState<User | null>();
+  const [authView, setAuthView] = useState<"login" | "register">("login");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -45,6 +48,27 @@ export default function Home() {
     }
   };
 
+  const handleRegister = async (username: string, password: string) => {
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      setUser(await register(username, password));
+    } catch (registerError) {
+      setError(
+        registerError instanceof ApiError
+          ? registerError.message
+          : "Unable to connect to the server."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const switchAuthView = (view: "login" | "register") => {
+    setError(null);
+    setAuthView(view);
+  };
+
   const handleLogout = async () => {
     await logout();
     setUser(null);
@@ -61,11 +85,19 @@ export default function Home() {
   }
 
   if (!user) {
-    return (
+    return authView === "login" ? (
       <LoginForm
         error={error}
         isSubmitting={isSubmitting}
         onSubmit={handleLogin}
+        onSwitchToRegister={() => switchAuthView("register")}
+      />
+    ) : (
+      <RegisterForm
+        error={error}
+        isSubmitting={isSubmitting}
+        onSubmit={handleRegister}
+        onSwitchToLogin={() => switchAuthView("login")}
       />
     );
   }

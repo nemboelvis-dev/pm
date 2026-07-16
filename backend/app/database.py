@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -19,11 +19,13 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS boards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS boards_user_id ON boards(user_id);
 
 CREATE TABLE IF NOT EXISTS board_columns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,29 +134,74 @@ def initialize_database() -> None:
     path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with connect() as connection:
+    connection = sqlite3.connect(path)
+    try:
+        connection.row_factory = sqlite3.Row
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version == 1:
+            _migrate_v1_to_v2(connection)
         connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.executescript(SCHEMA)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _seed_mvp_board(connection)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+    """Drop the one-board-per-user UNIQUE constraint on boards.user_id.
+
+    `ALTER TABLE ... RENAME TO` rewrites foreign key clauses in *other*
+    tables that reference the renamed table (e.g. board_columns.board_id
+    would start pointing at "boards_v1"). legacy_alter_table suppresses
+    that rewrite so those clauses keep referring to "boards" and resolve
+    correctly once the replacement table is created under that name.
+    """
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("PRAGMA legacy_alter_table = ON")
+    connection.executescript(
+        """
+        ALTER TABLE boards RENAME TO boards_v1;
+
+        CREATE TABLE boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT INTO boards (id, user_id, title, created_at, updated_at)
+        SELECT id, user_id, title, created_at, updated_at FROM boards_v1;
+
+        DROP TABLE boards_v1;
+        """
+    )
+    connection.execute("PRAGMA legacy_alter_table = OFF")
+    connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _seed_mvp_board(connection: sqlite3.Connection) -> None:
     connection.execute(
         "INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, ?)",
-        ("user", _password_hash("password")),
+        ("user", hash_password("password")),
     )
     user_id = connection.execute(
         "SELECT id FROM users WHERE username = ?", ("user",)
     ).fetchone()["id"]
 
-    connection.execute(
-        "INSERT OR IGNORE INTO boards (user_id, title) VALUES (?, ?)",
-        (user_id, "Kanban Studio"),
-    )
-    board_id = connection.execute(
-        "SELECT id FROM boards WHERE user_id = ?", (user_id,)
-    ).fetchone()["id"]
+    existing_board = connection.execute(
+        "SELECT id FROM boards WHERE user_id = ? ORDER BY id LIMIT 1", (user_id,)
+    ).fetchone()
+    if existing_board:
+        board_id = existing_board["id"]
+    else:
+        board_id = connection.execute(
+            "INSERT INTO boards (user_id, title) VALUES (?, ?)",
+            (user_id, "Kanban Studio"),
+        ).lastrowid
 
     for position, title in enumerate(COLUMNS):
         connection.execute(
@@ -197,7 +244,25 @@ def _seed_mvp_board(connection: sqlite3.Connection) -> None:
         card_positions[column_position] = position + 1
 
 
-def _password_hash(password: str) -> str:
+def create_board_with_default_columns(
+    connection: sqlite3.Connection, user_id: int, title: str
+) -> int:
+    board_id = connection.execute(
+        "INSERT INTO boards (user_id, title) VALUES (?, ?)",
+        (user_id, title),
+    ).lastrowid
+    for position, column_title in enumerate(COLUMNS):
+        connection.execute(
+            """
+            INSERT INTO board_columns (board_id, title, position)
+            VALUES (?, ?, ?)
+            """,
+            (board_id, column_title, position),
+        )
+    return board_id
+
+
+def hash_password(password: str) -> str:
     salt = os.urandom(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1)
     return f"scrypt${salt.hex()}${digest.hex()}"

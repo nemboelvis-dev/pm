@@ -2,19 +2,19 @@
 
 import { useState, type FormEvent } from "react";
 
-type LoginFormProps = {
+type RegisterFormProps = {
   error: string | null;
   isSubmitting: boolean;
   onSubmit: (username: string, password: string) => Promise<void>;
-  onSwitchToRegister: () => void;
+  onSwitchToLogin: () => void;
 };
 
-export const LoginForm = ({
+export const RegisterForm = ({
   error,
   isSubmitting,
   onSubmit,
-  onSwitchToRegister,
-}: LoginFormProps) => {
+  onSwitchToLogin,
+}: RegisterFormProps) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
@@ -34,10 +34,10 @@ export const LoginForm = ({
           Project workspace
         </p>
         <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
-          Welcome back
+          Create your account
         </h1>
         <p className="mt-3 text-sm leading-6 text-[var(--gray-text)]">
-          Sign in to open your Kanban board.
+          Get your own board with five ready-made columns.
         </p>
 
         <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
@@ -48,20 +48,31 @@ export const LoginForm = ({
               className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-4 py-3 font-normal outline-none transition focus:border-[var(--primary-blue)] focus:bg-white"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
+              minLength={3}
+              maxLength={32}
+              pattern="[a-zA-Z0-9_\-]+"
+              title="3-32 characters: letters, numbers, underscores, or dashes"
               required
             />
           </label>
+          <p className="-mt-3 text-xs font-normal text-[var(--gray-text)]">
+            3-32 characters: letters, numbers, underscores, or dashes.
+          </p>
           <label className="block text-sm font-semibold text-[var(--navy-dark)]">
             Password
             <input
-              autoComplete="current-password"
+              autoComplete="new-password"
               className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-4 py-3 font-normal outline-none transition focus:border-[var(--primary-blue)] focus:bg-white"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              minLength={8}
               required
             />
           </label>
+          <p className="-mt-3 text-xs font-normal text-[var(--gray-text)]">
+            At least 8 characters.
+          </p>
 
           {error ? (
             <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700" role="alert">
@@ -74,21 +85,18 @@ export const LoginForm = ({
             disabled={isSubmitting}
             type="submit"
           >
-            {isSubmitting ? "Signing in..." : "Sign in"}
+            {isSubmitting ? "Creating account..." : "Create account"}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-xs text-[var(--gray-text)]">
-          MVP credentials: user / password
-        </p>
-        <p className="mt-3 text-center text-sm text-[var(--gray-text)]">
-          New here?{" "}
+        <p className="mt-6 text-center text-sm text-[var(--gray-text)]">
+          Already have an account?{" "}
           <button
             className="font-semibold text-[var(--primary-blue)] hover:underline"
-            onClick={onSwitchToRegister}
+            onClick={onSwitchToLogin}
             type="button"
           >
-            Create an account
+            Sign in
           </button>
         </p>
       </section>

@@ -57,7 +57,7 @@ describe("ChatSidebar", () => {
       },
     ]);
 
-    render(<ChatSidebar onBoardUpdate={vi.fn()} />);
+    render(<ChatSidebar boardId="1" onBoardUpdate={vi.fn()} />);
 
     expect(screen.getByText("Loading conversation...")).toBeInTheDocument();
     expect(await screen.findByText("What is blocked?")).toBeInTheDocument();
@@ -75,7 +75,7 @@ describe("ChatSidebar", () => {
       })
     );
     const onBoardUpdate = vi.fn();
-    render(<ChatSidebar onBoardUpdate={onBoardUpdate} />);
+    render(<ChatSidebar boardId="1" onBoardUpdate={onBoardUpdate} />);
     const input = screen.getByLabelText("Message the board assistant");
     await screen.findByText("What should change?");
 
@@ -83,6 +83,7 @@ describe("ChatSidebar", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(sendChatMessageMock).toHaveBeenCalledWith(
+      "1",
       "Move the launch card to Review"
     );
     expect(screen.getByRole("status")).toHaveTextContent(
@@ -111,7 +112,7 @@ describe("ChatSidebar", () => {
       new ApiError("OpenRouter request failed with HTTP 503", 502)
     );
     const onBoardUpdate = vi.fn();
-    render(<ChatSidebar onBoardUpdate={onBoardUpdate} />);
+    render(<ChatSidebar boardId="1" onBoardUpdate={onBoardUpdate} />);
     const input = screen.getByLabelText("Message the board assistant");
     await screen.findByText("What should change?");
 
@@ -128,7 +129,7 @@ describe("ChatSidebar", () => {
   it("retries a failed history request", async () => {
     getChatHistoryMock.mockRejectedValueOnce(new Error("offline"));
     getChatHistoryMock.mockResolvedValueOnce([assistantMessage]);
-    render(<ChatSidebar onBoardUpdate={vi.fn()} />);
+    render(<ChatSidebar boardId="1" onBoardUpdate={vi.fn()} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Unable to load chat history."

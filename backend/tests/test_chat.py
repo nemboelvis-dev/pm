@@ -12,27 +12,51 @@ def ai_response(message: str, operations: list[dict] | None = None) -> str:
 
 
 def test_chat_requires_authentication(client: TestClient) -> None:
-    assert client.get("/api/chat").status_code == 401
-    assert client.post("/api/chat", json={"message": "Hello"}).status_code == 401
+    assert client.get("/api/boards/1/chat").status_code == 401
+    assert (
+        client.post("/api/boards/1/chat", json={"message": "Hello"}).status_code
+        == 401
+    )
 
 
-def test_chat_rejects_a_blank_message(authenticated_client: TestClient) -> None:
-    response = authenticated_client.post("/api/chat", json={"message": "   "})
+def test_chat_rejects_a_blank_message(
+    authenticated_client: TestClient, board_id: int
+) -> None:
+    response = authenticated_client.post(
+        f"/api/boards/{board_id}/chat", json={"message": "   "}
+    )
 
     assert response.status_code == 422
 
 
-def test_chat_sends_board_scoped_history_and_strict_schema(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+def test_chat_requires_board_ownership(
+    authenticated_client: TestClient,
 ) -> None:
     with connect() as connection:
-        board_id = connection.execute(
-            """
-            SELECT boards.id FROM boards
-            JOIN users ON users.id = boards.user_id
-            WHERE users.username = 'user'
-            """
-        ).fetchone()["id"]
+        other_user_id = connection.execute(
+            "INSERT INTO users (username, password_hash) VALUES ('other', 'hash')"
+        ).lastrowid
+        other_board_id = connection.execute(
+            "INSERT INTO boards (user_id, title) VALUES (?, 'Private')",
+            (other_user_id,),
+        ).lastrowid
+
+    assert (
+        authenticated_client.get(f"/api/boards/{other_board_id}/chat").status_code
+        == 404
+    )
+    assert (
+        authenticated_client.post(
+            f"/api/boards/{other_board_id}/chat", json={"message": "Hi"}
+        ).status_code
+        == 404
+    )
+
+
+def test_chat_sends_board_scoped_history_and_strict_schema(
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with connect() as connection:
         connection.execute(
             "INSERT INTO chat_messages (board_id, role, content) VALUES (?, 'user', ?)",
             (board_id, "Earlier question"),
@@ -79,10 +103,10 @@ def test_chat_sends_board_scoped_history_and_strict_schema(
         return ai_response("No changes needed.")
 
     monkeypatch.setattr(chat, "create_completion", fake_completion)
-    board_before = authenticated_client.get("/api/board").json()
+    board_before = authenticated_client.get(f"/api/boards/{board_id}").json()
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "What should I do next?"}
+        f"/api/boards/{board_id}/chat", json={"message": "What should I do next?"}
     )
 
     assert response.status_code == 200
@@ -142,7 +166,7 @@ def test_chat_sends_board_scoped_history_and_strict_schema(
     assert captured["frequency_penalty"] == 0.4
     assert captured["presence_penalty"] == 0.4
 
-    history = authenticated_client.get("/api/chat").json()
+    history = authenticated_client.get(f"/api/boards/{board_id}/chat").json()
     assert [(message["role"], message["content"]) for message in history] == [
         ("user", "Earlier question"),
         ("assistant", "Earlier answer"),
@@ -152,9 +176,9 @@ def test_chat_sends_board_scoped_history_and_strict_schema(
 
 
 def test_chat_applies_multiple_card_operations_and_returns_the_board(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    board_before = authenticated_client.get("/api/board").json()
+    board_before = authenticated_client.get(f"/api/boards/{board_id}").json()
     first_column = board_before["columns"][0]
     target_column = board_before["columns"][1]
     card_id = int(first_column["cardIds"][0])
@@ -187,7 +211,7 @@ def test_chat_applies_multiple_card_operations_and_returns_the_board(
     monkeypatch.setattr(chat, "create_completion", fake_completion)
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "Update my board"}
+        f"/api/boards/{board_id}/chat", json={"message": "Update my board"}
     )
 
     assert response.status_code == 200
@@ -205,9 +229,9 @@ def test_chat_applies_multiple_card_operations_and_returns_the_board(
         card["title"] == "AI-created card"
         for card in data["board"]["cards"].values()
     )
-    assert authenticated_client.get("/api/board").json() == data["board"]
+    assert authenticated_client.get(f"/api/boards/{board_id}").json() == data["board"]
 
-    history = authenticated_client.get("/api/chat").json()
+    history = authenticated_client.get(f"/api/boards/{board_id}/chat").json()
     assert [(message["role"], message["content"]) for message in history] == [
         ("user", "Update my board"),
         ("assistant", "Created, edited, and moved the cards."),
@@ -215,12 +239,12 @@ def test_chat_applies_multiple_card_operations_and_returns_the_board(
 
 
 def test_chat_deletes_and_moves_cards_when_requested(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initial_board = authenticated_client.get("/api/board").json()
+    initial_board = authenticated_client.get(f"/api/boards/{board_id}").json()
     backlog = initial_board["columns"][0]
     create_response = authenticated_client.post(
-        "/api/cards",
+        f"/api/boards/{board_id}/cards",
         json={
             "column_id": int(backlog["id"]),
             "title": "test",
@@ -265,7 +289,7 @@ def test_chat_deletes_and_moves_cards_when_requested(
     monkeypatch.setattr(chat, "create_completion", fake_completion)
 
     response = authenticated_client.post(
-        "/api/chat",
+        f"/api/boards/{board_id}/chat",
         json={
             "message": (
                 'Delete card "test" from Backlog. Move "Design card layout" '
@@ -286,9 +310,9 @@ def test_chat_deletes_and_moves_cards_when_requested(
 
 
 def test_invalid_ai_operation_rolls_back_all_changes_and_messages(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    board_before = authenticated_client.get("/api/board").json()
+    board_before = authenticated_client.get(f"/api/boards/{board_id}").json()
     column_id = int(board_before["columns"][0]["id"])
 
     async def fake_completion(*_: object, **__: object) -> str:
@@ -313,19 +337,19 @@ def test_invalid_ai_operation_rolls_back_all_changes_and_messages(
     monkeypatch.setattr(chat, "create_completion", fake_completion)
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "Apply an invalid update"}
+        f"/api/boards/{board_id}/chat", json={"message": "Apply an invalid update"}
     )
 
     assert response.status_code == 422
     assert response.json() == {
         "detail": "AI operation 2 is invalid: Card not found"
     }
-    assert authenticated_client.get("/api/board").json() == board_before
-    assert authenticated_client.get("/api/chat").json() == []
+    assert authenticated_client.get(f"/api/boards/{board_id}").json() == board_before
+    assert authenticated_client.get(f"/api/boards/{board_id}/chat").json() == []
 
 
 def test_invalid_structured_response_is_rejected_without_saving_history(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def fake_completion(*_: object, **__: object) -> str:
         return '{"message":"Missing operations"}'
@@ -333,18 +357,18 @@ def test_invalid_structured_response_is_rejected_without_saving_history(
     monkeypatch.setattr(chat, "create_completion", fake_completion)
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "Invalid model response"}
+        f"/api/boards/{board_id}/chat", json={"message": "Invalid model response"}
     )
 
     assert response.status_code == 502
     assert response.json() == {
         "detail": "OpenRouter returned an invalid board update"
     }
-    assert authenticated_client.get("/api/chat").json() == []
+    assert authenticated_client.get(f"/api/boards/{board_id}/chat").json() == []
 
 
 def test_chat_retries_an_invalid_structured_response_once(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     completions = iter(
         [
@@ -363,7 +387,7 @@ def test_chat_retries_an_invalid_structured_response_once(
     monkeypatch.setattr(chat, "create_completion", fake_completion)
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "Please inspect my board"}
+        f"/api/boards/{board_id}/chat", json={"message": "Please inspect my board"}
     )
 
     assert response.status_code == 200
@@ -380,26 +404,25 @@ def test_chat_retries_an_invalid_structured_response_once(
 
 
 def test_chat_reports_missing_openrouter_configuration(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "Help with the board"}
+        f"/api/boards/{board_id}/chat", json={"message": "Help with the board"}
     )
 
     assert response.status_code == 503
     assert response.json() == {
         "detail": "OPENROUTER_API_KEY is not configured on the server"
     }
-    assert authenticated_client.get("/api/chat").json() == []
+    assert authenticated_client.get(f"/api/boards/{board_id}/chat").json() == []
 
 
 def test_chat_caps_history_sent_to_openrouter(
-    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    authenticated_client: TestClient, board_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with connect() as connection:
-        board_id = connection.execute("SELECT id FROM boards").fetchone()["id"]
         for index in range(55):
             connection.execute(
                 """
@@ -424,7 +447,7 @@ def test_chat_caps_history_sent_to_openrouter(
     monkeypatch.setattr(chat, "create_completion", fake_completion)
 
     response = authenticated_client.post(
-        "/api/chat", json={"message": "Newest request"}
+        f"/api/boards/{board_id}/chat", json={"message": "Newest request"}
     )
 
     assert response.status_code == 200
@@ -432,4 +455,4 @@ def test_chat_caps_history_sent_to_openrouter(
     assert captured_messages[1]["content"] == "History 5"
     assert captured_messages[-2]["content"] == "History 54"
     assert captured_messages[-1] == {"role": "user", "content": "Newest request"}
-    assert len(authenticated_client.get("/api/chat").json()) == 57
+    assert len(authenticated_client.get(f"/api/boards/{board_id}/chat").json()) == 57

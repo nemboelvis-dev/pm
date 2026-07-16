@@ -3,16 +3,25 @@ import binascii
 import hashlib
 import hmac
 import os
+import re
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from app.database import connect, verify_password
+from app.database import (
+    connect,
+    create_board_with_default_columns,
+    hash_password,
+    verify_password,
+)
 
 SESSION_COOKIE = "pm_session"
 SESSION_MAX_AGE = 30 * 24 * 60 * 60
+USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
+MIN_PASSWORD_LENGTH = 8
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -20,6 +29,30 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 class Credentials(BaseModel):
     username: str
     password: str
+
+
+class Registration(BaseModel):
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def username_must_be_valid(cls, value: str) -> str:
+        if not USERNAME_PATTERN.match(value):
+            raise ValueError(
+                "Username must be 3-32 characters of letters, numbers, "
+                "underscores, or dashes"
+            )
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def password_must_be_long_enough(cls, value: str) -> str:
+        if len(value) < MIN_PASSWORD_LENGTH:
+            raise ValueError(
+                f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+            )
+        return value
 
 
 class User(BaseModel):
@@ -72,6 +105,42 @@ def authenticated_user(request: Request) -> User:
             detail="Authentication required",
         )
     return User(username=username)
+
+
+@router.post(
+    "/register", response_model=User, status_code=status.HTTP_201_CREATED
+)
+def register(registration: Registration, response: Response) -> User:
+    with connect() as connection:
+        existing = connection.execute(
+            "SELECT 1 FROM users WHERE username = ?", (registration.username,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username is already taken",
+            )
+        try:
+            user_id = connection.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (registration.username, hash_password(registration.password)),
+            ).lastrowid
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username is already taken",
+            ) from error
+        create_board_with_default_columns(connection, user_id, "My Board")
+
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=create_session_token(registration.username),
+        max_age=SESSION_MAX_AGE,
+        expires=datetime.now(UTC) + timedelta(seconds=SESSION_MAX_AGE),
+        httponly=True,
+        samesite="lax",
+    )
+    return User(username=registration.username)
 
 
 @router.post("/login", response_model=User)

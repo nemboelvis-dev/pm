@@ -1,13 +1,18 @@
 import { beforeEach, vi } from "vitest";
 import {
   ApiError,
+  createBoard,
   createCard,
+  deleteBoard,
   deleteCard,
   editCard,
   getBoard,
   getChatHistory,
+  listBoards,
   login,
   moveCard,
+  register,
+  renameBoard,
   renameColumn,
   sendChatMessage,
 } from "@/lib/api";
@@ -27,35 +32,71 @@ describe("API client", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("loads the board with the session cookie", async () => {
+  it("loads a board by id with the session cookie", async () => {
     fetchMock.mockResolvedValue(boardResponse());
 
-    await expect(getBoard()).resolves.toEqual(initialData);
-    expect(fetchMock).toHaveBeenCalledWith("/api/board", {
+    await expect(getBoard("1")).resolves.toEqual(initialData);
+    expect(fetchMock).toHaveBeenCalledWith("/api/boards/1", {
       credentials: "include",
       headers: undefined,
     });
   });
 
-  it("sends each board mutation to its matching endpoint", async () => {
+  it("lists boards for the current user", async () => {
+    const summaries = [
+      { id: "1", title: "Kanban Studio", created_at: "", updated_at: "" },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(summaries), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await expect(listBoards()).resolves.toEqual(summaries);
+    expect(fetchMock).toHaveBeenCalledWith("/api/boards", {
+      credentials: "include",
+      headers: undefined,
+    });
+  });
+
+  it("sends each board-scoped mutation to its matching endpoint", async () => {
     fetchMock.mockImplementation(async () => boardResponse());
 
-    await renameColumn("2", "Ideas");
-    await createCard("2", "New", "Details");
-    await editCard("7", "Edited", "Changed");
-    await deleteCard("7");
-    await moveCard("8", "3", 1);
+    await createBoard("New board");
+    await renameBoard("1", "Renamed");
+    await deleteBoard("1");
+    await renameColumn("1", "2", "Ideas");
+    await createCard("1", "2", "New", "Details");
+    await editCard("1", "7", "Edited", "Changed");
+    await deleteCard("1", "7");
+    await moveCard("1", "8", "3", 1);
 
     expect(fetchMock.mock.calls).toEqual([
       [
-        "/api/columns/2",
+        "/api/boards",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ title: "New board" }),
+        }),
+      ],
+      [
+        "/api/boards/1",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ title: "Renamed" }),
+        }),
+      ],
+      ["/api/boards/1", expect.objectContaining({ method: "DELETE" })],
+      [
+        "/api/boards/1/columns/2",
         expect.objectContaining({
           method: "PATCH",
           body: JSON.stringify({ title: "Ideas" }),
         }),
       ],
       [
-        "/api/cards",
+        "/api/boards/1/cards",
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
@@ -66,15 +107,18 @@ describe("API client", () => {
         }),
       ],
       [
-        "/api/cards/7",
+        "/api/boards/1/cards/7",
         expect.objectContaining({
           method: "PATCH",
           body: JSON.stringify({ title: "Edited", details: "Changed" }),
         }),
       ],
-      ["/api/cards/7", expect.objectContaining({ method: "DELETE" })],
       [
-        "/api/cards/8/move",
+        "/api/boards/1/cards/7",
+        expect.objectContaining({ method: "DELETE" }),
+      ],
+      [
+        "/api/boards/1/cards/8/move",
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ column_id: 3, position: 1 }),
@@ -96,6 +140,26 @@ describe("API client", () => {
     );
   });
 
+  it("registers a new account", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ username: "new-user" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await expect(register("new-user", "correct-horse")).resolves.toEqual({
+      username: "new-user",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/register",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ username: "new-user", password: "correct-horse" }),
+      })
+    );
+  });
+
   it("preserves the status when an error response is not JSON", async () => {
     fetchMock.mockResolvedValue(
       new Response("Bad gateway", {
@@ -104,10 +168,10 @@ describe("API client", () => {
       })
     );
 
-    await expect(getBoard()).rejects.toEqual(new ApiError("Request failed", 502));
+    await expect(getBoard("1")).rejects.toEqual(new ApiError("Request failed", 502));
   });
 
-  it("loads chat history and sends a chat message", async () => {
+  it("loads chat history and sends a chat message for a board", async () => {
     fetchMock
       .mockResolvedValueOnce(
         new Response(JSON.stringify([]), {
@@ -136,19 +200,19 @@ describe("API client", () => {
         )
       );
 
-    await expect(getChatHistory()).resolves.toEqual([]);
-    await sendChatMessage("Move the card");
+    await expect(getChatHistory("1")).resolves.toEqual([]);
+    await sendChatMessage("1", "Move the card");
 
     expect(fetchMock.mock.calls).toEqual([
       [
-        "/api/chat",
+        "/api/boards/1/chat",
         {
           credentials: "include",
           headers: undefined,
         },
       ],
       [
-        "/api/chat",
+        "/api/boards/1/chat",
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ message: "Move the card" }),

@@ -24,31 +24,42 @@ const signIn = async (page: Page) => {
   await page.getByLabel("Username").fill("user");
   await page.getByLabel("Password").fill("password");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+  await expect(page.getByLabel("Board title")).toHaveValue("Kanban Studio");
 };
 
 const deleteCardsByTitle = async (page: Page, titles: string[]) => {
   await page.evaluate(async (cardTitles) => {
-    const response = await fetch("/api/board");
+    const boardsResponse = await fetch("/api/boards");
+    if (!boardsResponse.ok) return;
+    const boards = (await boardsResponse.json()) as { id: string }[];
+    const boardId = boards[0].id;
+    const response = await fetch(`/api/boards/${boardId}`);
     if (!response.ok) return;
     const board = (await response.json()) as {
       cards: Record<string, { id: string; title: string }>;
     };
     for (const card of Object.values(board.cards)) {
       if (cardTitles.includes(card.title)) {
-        await fetch(`/api/cards/${card.id}`, { method: "DELETE" });
+        await fetch(`/api/boards/${boardId}/cards/${card.id}`, {
+          method: "DELETE",
+        });
       }
     }
   }, titles);
 };
 
+const getFirstBoardId = async (page: Page): Promise<string> =>
+  page.evaluate(async () => {
+    const response = await fetch("/api/boards");
+    const boards = (await response.json()) as { id: string }[];
+    return boards[0].id;
+  });
+
 test("requires sign in", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Kanban Studio" })
-  ).not.toBeVisible();
+  await expect(page.getByLabel("Board title")).not.toBeVisible();
 });
 
 test("rejects invalid credentials", async ({ page }) => {
@@ -69,7 +80,7 @@ test("persists login across a browser restart", async ({
 }) => {
   await signIn(page);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+  await expect(page.getByLabel("Board title")).toHaveValue("Kanban Studio");
 
   const storageState = await context.storageState();
   const sessionCookie = storageState.cookies.find(
@@ -83,9 +94,7 @@ test("persists login across a browser restart", async ({
     if (message.type() === "error") consoleErrors.push(message.text());
   });
   await restartedPage.goto("/");
-  await expect(
-    restartedPage.getByRole("heading", { name: "Kanban Studio" })
-  ).toBeVisible();
+  await expect(restartedPage.getByLabel("Board title")).toHaveValue("Kanban Studio");
   await restartedContext.close();
 });
 
@@ -151,7 +160,7 @@ test("persists and restores a column rename", async ({ page }) => {
   try {
     await title.fill(renamedTitle);
     await title.press("Enter");
-    await expect(page.getByText(renamedTitle, { exact: true })).toBeVisible();
+    await expect(title).toHaveValue(renamedTitle);
 
     await page.reload();
     await expect(
@@ -170,6 +179,7 @@ test("persists and restores a column rename", async ({ page }) => {
 
 test("persists a card move and restores its original position", async ({ page }) => {
   await signIn(page);
+  const boardId = await getFirstBoardId(page);
   const sourceColumn = page.locator('[data-testid^="column-"]').first();
   const targetColumn = page.locator('[data-testid^="column-"]').nth(3);
   const card = sourceColumn.locator('[data-testid^="card-"]').first();
@@ -205,14 +215,14 @@ test("persists a card move and restores its original position", async ({ page })
     await expect(page.getByTestId(targetTestId).getByTestId(cardTestId)).toBeVisible();
   } finally {
     await page.evaluate(
-      async ({ movedCardId, originalColumnId }) => {
-        await fetch(`/api/cards/${movedCardId}/move`, {
+      async ({ movedBoardId, movedCardId, originalColumnId }) => {
+        await fetch(`/api/boards/${movedBoardId}/cards/${movedCardId}/move`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ column_id: Number(originalColumnId), position: 0 }),
         });
       },
-      { movedCardId: cardId, originalColumnId: sourceColumnId }
+      { movedBoardId: boardId, movedCardId: cardId, originalColumnId: sourceColumnId }
     );
   }
   await page.reload();
@@ -223,7 +233,11 @@ test("persists a card move and restores its original position", async ({ page })
 test("loads chat history and refreshes the board from an AI response", async ({
   page,
 }) => {
+  await signIn(page);
+  const boardId = await getFirstBoardId(page);
+
   const chatBoard = structuredClone(initialData);
+  chatBoard.id = boardId;
   chatBoard.cards["card-ai"] = {
     id: "card-ai",
     title: "AI-created launch checklist",
@@ -232,7 +246,7 @@ test("loads chat history and refreshes the board from an AI response", async ({
   chatBoard.columns[0].cardIds.push("card-ai");
   let sentMessage: unknown;
 
-  await page.route("**/api/chat", async (route) => {
+  await page.route(`**/api/boards/${boardId}/chat`, async (route) => {
     if (route.request().method() === "GET") {
       await route.fulfill({
         contentType: "application/json",
@@ -269,7 +283,7 @@ test("loads chat history and refreshes the board from an AI response", async ({
     });
   });
 
-  await signIn(page);
+  await page.reload();
   await expect(page.getByRole("heading", { name: "Board assistant" })).toBeVisible();
   await expect(page.getByText("How can I help with the board?")).toBeVisible();
 
@@ -293,4 +307,54 @@ test("logs out and protects the board", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+});
+
+test("registers a new account with its own default board", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Create an account" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Create your account" })
+  ).toBeVisible();
+
+  const username = `e2e-user-${Date.now()}`;
+  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Password").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Create account" }).click();
+
+  await expect(page.getByLabel("Board title")).toHaveValue("My Board");
+  await expect(page.locator('[data-testid^="column-"]')).toHaveCount(5);
+  await expect(page.locator('[data-testid^="card-"]')).toHaveCount(0);
+  await expect(page.getByText(`Signed in as ${username}`)).toBeVisible();
+});
+
+test("creates a second board and switches between boards", async ({ page }) => {
+  await signIn(page);
+  const boardName = `Second board ${Date.now()}`;
+
+  try {
+    await page.getByRole("button", { name: "Create a new board" }).click();
+    await page.getByPlaceholder("Board name").fill(boardName);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+
+    await expect(page.getByLabel("Board title")).toHaveValue(boardName);
+    await expect(page.locator('[data-testid^="card-"]')).toHaveCount(0);
+
+    await page
+      .getByTestId(/board-tab-/)
+      .filter({ hasText: "Kanban Studio" })
+      .click();
+    await expect(page.getByLabel("Board title")).toHaveValue("Kanban Studio");
+    await expect(page.locator('[data-testid^="card-"]')).toHaveCount(8);
+  } finally {
+    const secondBoardTab = page
+      .getByTestId(/board-tab-/)
+      .filter({ hasText: boardName });
+    if (await secondBoardTab.count()) {
+      page.once("dialog", (dialog) => void dialog.accept());
+      await secondBoardTab
+        .getByRole("button", { name: `Delete board ${boardName}` })
+        .click();
+    }
+  }
+  await expect(page.getByText(boardName)).toHaveCount(0);
 });

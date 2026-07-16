@@ -11,10 +11,11 @@ import {
 import type { BoardData } from "@/lib/kanban";
 
 type ChatSidebarProps = {
+  boardId: string;
   onBoardUpdate: (board: BoardData) => void;
 };
 
-export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
+export const ChatSidebar = ({ boardId, onBoardUpdate }: ChatSidebarProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -25,7 +26,7 @@ export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
 
   useEffect(() => {
     let active = true;
-    getChatHistory()
+    getChatHistory(boardId)
       .then((history) => {
         if (active) {
           setMessages(history);
@@ -44,7 +45,7 @@ export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [boardId]);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView?.({ block: "nearest" });
@@ -54,7 +55,7 @@ export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
     setError(null);
     setIsLoading(true);
     try {
-      setMessages(await getChatHistory());
+      setMessages(await getChatHistory(boardId));
       setHistoryFailed(false);
     } catch (loadError) {
       setError(chatError(loadError, "Unable to load chat history."));
@@ -73,7 +74,7 @@ export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
     setHistoryFailed(false);
     setIsSending(true);
     try {
-      const response = await sendChatMessage(message);
+      const response = await sendChatMessage(boardId, message);
       setMessages((current) => [
         ...current,
         response.user_message,

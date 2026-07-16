@@ -3,11 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, vi } from "vitest";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import {
+  createBoard,
   createCard,
   deleteCard,
   editCard,
   getBoard,
   getChatHistory,
+  listBoards,
   renameColumn,
 } from "@/lib/api";
 import { initialData, type BoardData } from "@/lib/kanban";
@@ -16,23 +18,35 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
+    createBoard: vi.fn(),
     createCard: vi.fn(),
     deleteCard: vi.fn(),
     editCard: vi.fn(),
     getBoard: vi.fn(),
     getChatHistory: vi.fn(),
+    listBoards: vi.fn(),
     renameColumn: vi.fn(),
   };
 });
 
+const createBoardMock = vi.mocked(createBoard);
 const createCardMock = vi.mocked(createCard);
 const deleteCardMock = vi.mocked(deleteCard);
 const editCardMock = vi.mocked(editCard);
 const getBoardMock = vi.mocked(getBoard);
 const getChatHistoryMock = vi.mocked(getChatHistory);
+const listBoardsMock = vi.mocked(listBoards);
 const renameColumnMock = vi.mocked(renameColumn);
 
 const copyBoard = (): BoardData => structuredClone(initialData);
+const summaryFor = (board: BoardData) => [
+  {
+    id: board.id,
+    title: board.title,
+    created_at: "2026-07-01 00:00:00",
+    updated_at: "2026-07-01 00:00:00",
+  },
+];
 const getFirstColumn = () => screen.getAllByTestId(/column-/i)[0];
 
 describe("KanbanBoard", () => {
@@ -42,7 +56,9 @@ describe("KanbanBoard", () => {
   });
 
   it("loads and renders the persistent board", async () => {
-    getBoardMock.mockResolvedValue(copyBoard());
+    const board = copyBoard();
+    listBoardsMock.mockResolvedValue(summaryFor(board));
+    getBoardMock.mockResolvedValue(board);
 
     render(<KanbanBoard />);
 
@@ -63,7 +79,11 @@ describe("KanbanBoard", () => {
     await userEvent.tab();
 
     await waitFor(() =>
-      expect(renameColumnMock).toHaveBeenCalledWith("col-backlog", "New Name")
+      expect(renameColumnMock).toHaveBeenCalledWith(
+        "demo-board",
+        "col-backlog",
+        "New Name"
+      )
     );
     expect(input).toHaveValue("New Name");
   });
@@ -137,15 +157,79 @@ describe("KanbanBoard", () => {
   });
 
   it("shows a retry action when board loading fails", async () => {
-    getBoardMock.mockRejectedValueOnce(new Error("offline"));
-    getBoardMock.mockResolvedValueOnce(copyBoard());
+    listBoardsMock.mockRejectedValueOnce(new Error("offline"));
+    listBoardsMock.mockResolvedValueOnce(summaryFor(copyBoard()));
+    getBoardMock.mockResolvedValue(copyBoard());
     render(<KanbanBoard />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Unable to load the board. Check that the server is running and try again."
+      "Unable to load your boards. Check that the server is running and try again."
     );
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findAllByTestId(/column-/i)).toHaveLength(5);
+  });
+
+  it("prompts to create the first board when the account has none", async () => {
+    const created = copyBoard();
+    createBoardMock.mockResolvedValue(created);
+
+    render(<KanbanBoard initialBoards={[]} />);
+
+    expect(
+      screen.getByRole("heading", { name: "Create your first board" })
+    ).toBeInTheDocument();
+
+    await userEvent.type(
+      screen.getByPlaceholderText("Board name"),
+      created.title
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /create board/i })
+    );
+
+    expect(createBoardMock).toHaveBeenCalledWith(created.title);
+    expect(await screen.findAllByTestId(/column-/i)).toHaveLength(5);
+  });
+
+  it("switches to another board and loads its contents", async () => {
+    const firstBoard = copyBoard();
+    const secondBoard: BoardData = {
+      id: "second-board",
+      title: "Sprint 2",
+      columns: [{ id: "col-a", title: "Backlog", cardIds: [] }],
+      cards: {},
+    };
+    const summaries = [
+      {
+        id: firstBoard.id,
+        title: firstBoard.title,
+        created_at: "2026-07-01 00:00:00",
+        updated_at: "2026-07-02 00:00:00",
+      },
+      {
+        id: secondBoard.id,
+        title: secondBoard.title,
+        created_at: "2026-07-01 00:00:00",
+        updated_at: "2026-07-01 00:00:00",
+      },
+    ];
+    getBoardMock.mockImplementation(async (boardId) =>
+      boardId === secondBoard.id ? secondBoard : firstBoard
+    );
+
+    render(
+      <KanbanBoard initialBoard={firstBoard} initialBoards={summaries} />
+    );
+    expect(await screen.findAllByTestId(/column-/i)).toHaveLength(5);
+
+    await userEvent.click(
+      within(screen.getByTestId(`board-tab-${secondBoard.id}`)).getByText(
+        "Sprint 2"
+      )
+    );
+
+    expect(await screen.findByDisplayValue("Sprint 2")).toBeInTheDocument();
+    expect(getBoardMock).toHaveBeenCalledWith(secondBoard.id);
   });
 });

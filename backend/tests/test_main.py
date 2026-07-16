@@ -38,6 +38,79 @@ def test_missing_static_directory_logs_a_warning(
     assert str(missing_directory) in caplog.text
 
 
+def test_registers_a_new_user_with_a_default_board(client: TestClient) -> None:
+    response = client.post(
+        "/api/auth/register",
+        json={"username": "new-user", "password": "correct-horse"},
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {"username": "new-user"}
+    assert SESSION_COOKIE in client.cookies
+
+    boards = client.get("/api/boards").json()
+    assert len(boards) == 1
+    assert boards[0]["title"] == "My Board"
+
+    board = client.get(f"/api/boards/{boards[0]['id']}").json()
+    assert [column["title"] for column in board["columns"]] == [
+        "Backlog",
+        "Discovery",
+        "In Progress",
+        "Review",
+        "Done",
+    ]
+    assert board["cards"] == {}
+
+
+def test_registration_rejects_a_duplicate_username(client: TestClient) -> None:
+    response = client.post(
+        "/api/auth/register",
+        json={"username": "user", "password": "correct-horse"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Username is already taken"}
+
+
+@pytest.mark.parametrize(
+    ("username", "password"),
+    [
+        ("ab", "correct-horse"),
+        ("has a space", "correct-horse"),
+        ("valid-name", "short"),
+    ],
+)
+def test_registration_validates_username_and_password(
+    client: TestClient, username: str, password: str
+) -> None:
+    response = client.post(
+        "/api/auth/register",
+        json={"username": username, "password": password},
+    )
+
+    assert response.status_code == 422
+
+
+def test_registered_users_boards_are_isolated_from_each_other(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"username": "first", "password": "correct-horse"},
+    )
+    first_board_id = client.get("/api/boards").json()[0]["id"]
+    client.post("/api/auth/logout")
+
+    client.post(
+        "/api/auth/register",
+        json={"username": "second", "password": "correct-horse"},
+    )
+
+    assert client.get(f"/api/boards/{first_board_id}").status_code == 404
+    assert len(client.get("/api/boards").json()) == 1
+
+
 def test_session_requires_authentication(client: TestClient) -> None:
     response = client.get("/api/auth/session")
 

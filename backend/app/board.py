@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.auth import User, authenticated_user
-from app.database import connect
+from app.database import connect, create_board_with_default_columns
 
 
-router = APIRouter(prefix="/api", tags=["board"])
+router = APIRouter(prefix="/api/boards", tags=["board"])
 
 
 class Card(BaseModel):
@@ -27,6 +27,37 @@ class Board(BaseModel):
     title: str
     columns: list[Column]
     cards: dict[str, Card]
+
+
+class BoardSummary(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class CreateBoard(BaseModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("Title must not be blank")
+        return title
+
+
+class RenameBoard(BaseModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("Title must not be blank")
+        return title
 
 
 class RenameColumn(BaseModel):
@@ -91,20 +122,82 @@ class MoveCard(BaseModel):
     position: int = Field(ge=0)
 
 
-@router.get("/board", response_model=Board)
-def get_board(user: User = Depends(authenticated_user)) -> Board:
+@router.get("", response_model=list[BoardSummary])
+def list_boards(user: User = Depends(authenticated_user)) -> list[BoardSummary]:
     with connect() as connection:
-        return read_board(connection, user.username)
+        user_id = _user_id(connection, user.username)
+        rows = connection.execute(
+            """
+            SELECT id, title, created_at, updated_at FROM boards
+            WHERE user_id = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        BoardSummary(
+            id=str(row["id"]),
+            title=row["title"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+        for row in rows
+    ]
 
 
-@router.patch("/columns/{column_id}", response_model=Board)
+@router.post("", response_model=Board, status_code=status.HTTP_201_CREATED)
+def create_board(
+    new_board: CreateBoard, user: User = Depends(authenticated_user)
+) -> Board:
+    with connect() as connection:
+        user_id = _user_id(connection, user.username)
+        board_id = create_board_with_default_columns(
+            connection, user_id, new_board.title
+        )
+        return read_board(connection, user.username, board_id)
+
+
+@router.get("/{board_id}", response_model=Board)
+def get_board(
+    board_id: int, user: User = Depends(authenticated_user)
+) -> Board:
+    with connect() as connection:
+        return read_board(connection, user.username, board_id)
+
+
+@router.patch("/{board_id}", response_model=Board)
+def rename_board(
+    board_id: int,
+    update: RenameBoard,
+    user: User = Depends(authenticated_user),
+) -> Board:
+    with connect() as connection:
+        owned_board(connection, user.username, board_id)
+        connection.execute(
+            "UPDATE boards SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (update.title, board_id),
+        )
+        return read_board(connection, user.username, board_id)
+
+
+@router.delete("/{board_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_board(
+    board_id: int, user: User = Depends(authenticated_user)
+) -> None:
+    with connect() as connection:
+        owned_board(connection, user.username, board_id)
+        connection.execute("DELETE FROM boards WHERE id = ?", (board_id,))
+
+
+@router.patch("/{board_id}/columns/{column_id}", response_model=Board)
 def rename_column(
+    board_id: int,
     column_id: int,
     update: RenameColumn,
     user: User = Depends(authenticated_user),
 ) -> Board:
     with connect() as connection:
-        board_id = board_id_for_user(connection, user.username)
+        owned_board(connection, user.username, board_id)
         result = connection.execute(
             """
             UPDATE board_columns
@@ -116,53 +209,59 @@ def rename_column(
         if not result.rowcount:
             _not_found("Column")
         _touch_board(connection, board_id)
-        return read_board(connection, user.username)
+        return read_board(connection, user.username, board_id)
 
 
-@router.post("/cards", response_model=Board, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{board_id}/cards", response_model=Board, status_code=status.HTTP_201_CREATED
+)
 def create_card(
+    board_id: int,
     card: CreateCard,
     user: User = Depends(authenticated_user),
 ) -> Board:
     with connect() as connection:
-        board_id = board_id_for_user(connection, user.username)
+        owned_board(connection, user.username, board_id)
         create_card_record(connection, board_id, card)
-        return read_board(connection, user.username)
+        return read_board(connection, user.username, board_id)
 
 
-@router.patch("/cards/{card_id}", response_model=Board)
+@router.patch("/{board_id}/cards/{card_id}", response_model=Board)
 def edit_card(
+    board_id: int,
     card_id: int,
     update: EditCard,
     user: User = Depends(authenticated_user),
 ) -> Board:
     with connect() as connection:
-        board_id = board_id_for_user(connection, user.username)
+        owned_board(connection, user.username, board_id)
         edit_card_record(connection, board_id, card_id, update)
-        return read_board(connection, user.username)
+        return read_board(connection, user.username, board_id)
 
 
-@router.delete("/cards/{card_id}", response_model=Board)
+@router.delete("/{board_id}/cards/{card_id}", response_model=Board)
 def delete_card(
+    board_id: int,
     card_id: int,
     user: User = Depends(authenticated_user),
 ) -> Board:
     with connect() as connection:
-        board_id = board_id_for_user(connection, user.username)
+        owned_board(connection, user.username, board_id)
         delete_card_record(connection, board_id, card_id)
-        return read_board(connection, user.username)
+        return read_board(connection, user.username, board_id)
 
 
-@router.post("/cards/{card_id}/move", response_model=Board)
+@router.post("/{board_id}/cards/{card_id}/move", response_model=Board)
 def move_card(
+    board_id: int,
     card_id: int,
     move: MoveCard,
     user: User = Depends(authenticated_user),
 ) -> Board:
     with connect() as connection:
-        board_id = board_id_for_user(connection, user.username)
+        owned_board(connection, user.username, board_id)
         move_card_record(connection, board_id, card_id, move)
-        return read_board(connection, user.username)
+        return read_board(connection, user.username, board_id)
 
 
 def create_card_record(
@@ -256,17 +355,17 @@ def move_card_record(
     _touch_board(connection, board_id)
 
 
-def read_board(connection: sqlite3.Connection, username: str) -> Board:
-    board = connection.execute(
+def read_board(connection: sqlite3.Connection, username: str, board_id: int) -> Board:
+    board_row = connection.execute(
         """
         SELECT boards.id, boards.title
         FROM boards
         JOIN users ON users.id = boards.user_id
-        WHERE users.username = ?
+        WHERE users.username = ? AND boards.id = ?
         """,
-        (username,),
+        (username, board_id),
     ).fetchone()
-    if not board:
+    if not board_row:
         _not_found("Board")
 
     columns: list[Column] = []
@@ -277,7 +376,7 @@ def read_board(connection: sqlite3.Connection, username: str) -> Board:
         WHERE board_id = ?
         ORDER BY position
         """,
-        (board["id"],),
+        (board_row["id"],),
     ):
         card_ids: list[str] = []
         for card in connection.execute(
@@ -300,25 +399,36 @@ def read_board(connection: sqlite3.Connection, username: str) -> Board:
         )
 
     return Board(
-        id=str(board["id"]),
-        title=board["title"],
+        id=str(board_row["id"]),
+        title=board_row["title"],
         columns=columns,
         cards=cards,
     )
 
 
-def board_id_for_user(connection: sqlite3.Connection, username: str) -> int:
+def _user_id(connection: sqlite3.Connection, username: str) -> int:
+    row = connection.execute(
+        "SELECT id FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    if not row:
+        _not_found("User")
+    return row["id"]
+
+
+def owned_board(
+    connection: sqlite3.Connection, username: str, board_id: int
+) -> sqlite3.Row:
     row = connection.execute(
         """
-        SELECT boards.id FROM boards
+        SELECT boards.* FROM boards
         JOIN users ON users.id = boards.user_id
-        WHERE users.username = ?
+        WHERE boards.id = ? AND users.username = ?
         """,
-        (username,),
+        (board_id, username),
     ).fetchone()
     if not row:
         _not_found("Board")
-    return row["id"]
+    return row
 
 
 def _owned_column(

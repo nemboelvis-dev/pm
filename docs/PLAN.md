@@ -152,3 +152,19 @@ Tests and success criteria:
 - The full automated suite passes.
 - The production container serves the login, board, API, and chat from one local port.
 - No API key or generated database is committed.
+
+## Part 11: Multi-user accounts and multi-board support
+
+- [x] Add `POST /api/auth/register` (username/password validation, salted hash, auto-login) that creates a default board for the new account.
+- [x] Migrate the schema (`user_version` 1 -> 2) to drop the one-board-per-user `UNIQUE` constraint, preserving existing boards, columns, cards, and chat history.
+- [x] Rebuild `board.py` around board-list and board CRUD endpoints (`GET/POST /api/boards`, `GET/PATCH/DELETE /api/boards/{board_id}`), nesting column/card mutations and `chat.py` under `/api/boards/{board_id}/...` with per-board ownership checks.
+- [x] Add a board switcher (create/switch/delete) and a registration form to the frontend; keep board/chat state backend-owned (active board seeded from `GET /api/boards`, not persisted separately).
+- [x] Update every backend and frontend test for the new routes and flows; add coverage for registration, multi-board CRUD, cross-board isolation, and the schema migration.
+- [x] Add `pytest-cov` to track backend coverage (96% at the end of this part).
+
+Tests and success criteria:
+
+- A user can register, sign in, own multiple boards, and switch between them without losing chat history or card data.
+- A user cannot reach another user's board, or a board the same user owns but didn't request, through any endpoint.
+- The v1-to-v2 migration test seeds `board_columns`, `cards`, and `chat_messages` (not just `users`/`boards`) so it would catch foreign-key regressions from the table-recreation migration strategy.
+- Backend (60+ tests) and frontend (unit + e2e) suites pass; `npm run lint` and `next build` are clean.

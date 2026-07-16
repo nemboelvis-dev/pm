@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -11,18 +11,24 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { LogOut } from "lucide-react";
+import { LogOut, Plus } from "lucide-react";
+import { BoardSwitcher } from "@/components/BoardSwitcher";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import {
   ApiError,
+  createBoard,
   createCard,
+  deleteBoard,
   deleteCard,
   editCard,
   getBoard,
+  listBoards,
   moveCard as moveCardRequest,
+  renameBoard,
   renameColumn,
+  type BoardSummary,
 } from "@/lib/api";
 import { moveCard, type BoardData } from "@/lib/kanban";
 
@@ -30,14 +36,23 @@ type KanbanBoardProps = {
   username?: string;
   onLogout?: () => Promise<void>;
   initialBoard?: BoardData;
+  initialBoards?: BoardSummary[];
 };
 
 export const KanbanBoard = ({
   username,
   onLogout,
   initialBoard,
+  initialBoards,
 }: KanbanBoardProps = {}) => {
+  const [boards, setBoards] = useState<BoardSummary[] | null>(
+    initialBoards ?? (initialBoard ? [summaryFromBoard(initialBoard)] : null)
+  );
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(
+    initialBoard?.id ?? initialBoards?.[0]?.id ?? null
+  );
   const [board, setBoard] = useState<BoardData | null>(initialBoard ?? null);
+  const [boardTitle, setBoardTitle] = useState(initialBoard?.title ?? "");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,9 +63,30 @@ export const KanbanBoard = ({
   );
 
   useEffect(() => {
-    if (initialBoard) return;
-    getBoard()
-      .then(setBoard)
+    if (initialBoards || initialBoard) return;
+    listBoards()
+      .then((list) => {
+        setBoards(list);
+        setActiveBoardId(list[0]?.id ?? null);
+      })
+      .catch((loadError: unknown) =>
+        setError(
+          errorMessage(
+            loadError,
+            "Unable to load your boards. Check that the server is running and try again."
+          )
+        )
+      );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!activeBoardId || board?.id === activeBoardId) return;
+    getBoard(activeBoardId)
+      .then((loaded) => {
+        setBoard(loaded);
+        setBoardTitle(loaded.title);
+      })
       .catch((loadError: unknown) =>
         setError(
           errorMessage(
@@ -59,7 +95,8 @@ export const KanbanBoard = ({
           )
         )
       );
-  }, [initialBoard]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBoardId]);
 
   const cardsById = useMemo(() => board?.cards ?? {}, [board?.cards]);
 
@@ -73,6 +110,61 @@ export const KanbanBoard = ({
     } catch (mutationError) {
       setError(errorMessage(mutationError));
       return false;
+    }
+  };
+
+  const refreshBoards = async () => {
+    try {
+      setBoards(await listBoards());
+    } catch (loadError) {
+      setError(errorMessage(loadError, "Unable to refresh your boards."));
+    }
+  };
+
+  const handleCreateBoard = async (title: string): Promise<boolean> => {
+    setError(null);
+    try {
+      const created = await createBoard(title);
+      setBoard(created);
+      setBoardTitle(created.title);
+      setActiveBoardId(created.id);
+      await refreshBoards();
+      return true;
+    } catch (createError) {
+      setError(errorMessage(createError, "Unable to create the board."));
+      return false;
+    }
+  };
+
+  const handleDeleteBoard = async (boardId: string) => {
+    if (!window.confirm("Delete this board and all of its cards?")) return;
+    setError(null);
+    try {
+      await deleteBoard(boardId);
+      const remaining = await listBoards();
+      setBoards(remaining);
+      if (boardId === activeBoardId) {
+        const next = remaining[0]?.id ?? null;
+        setActiveBoardId(next);
+        if (!next) setBoard(null);
+      }
+    } catch (deleteError) {
+      setError(errorMessage(deleteError, "Unable to delete the board."));
+    }
+  };
+
+  const saveBoardTitle = async () => {
+    if (!board) return;
+    const nextTitle = boardTitle.trim();
+    if (!nextTitle || nextTitle === board.title) {
+      setBoardTitle(board.title);
+      return;
+    }
+    const saved = await applyMutation(() => renameBoard(board.id, nextTitle));
+    if (saved) {
+      await refreshBoards();
+    } else {
+      setBoardTitle(board.title);
     }
   };
 
@@ -97,6 +189,7 @@ export const KanbanBoard = ({
     setBoard({ ...board, columns: nextColumns });
     const saved = await applyMutation(() =>
       moveCardRequest(
+        board.id,
         cardId,
         targetColumn.id,
         targetColumn.cardIds.indexOf(cardId)
@@ -104,6 +197,17 @@ export const KanbanBoard = ({
     );
     if (!saved) setBoard(previousBoard);
   };
+
+  if (boards && boards.length === 0) {
+    return (
+      <FirstBoardPrompt
+        username={username}
+        onLogout={onLogout}
+        error={error}
+        onCreate={handleCreateBoard}
+      />
+    );
+  }
 
   if (!board) {
     return (
@@ -121,8 +225,11 @@ export const KanbanBoard = ({
                 className="mt-5 rounded-full bg-[var(--secondary-purple)] px-5 py-2 text-xs font-semibold uppercase tracking-wide text-white"
                 onClick={() => {
                   setError(null);
-                  getBoard()
-                    .then(setBoard)
+                  listBoards()
+                    .then((list) => {
+                      setBoards(list);
+                      setActiveBoardId(list[0]?.id ?? null);
+                    })
                     .catch((loadError: unknown) =>
                       setError(
                         errorMessage(
@@ -153,13 +260,24 @@ export const KanbanBoard = ({
       <main className="relative mx-auto flex min-h-screen max-w-[1920px] flex-col gap-10 px-6 pb-16 pt-12">
         <header className="flex flex-col gap-6 rounded-[32px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur">
           <div className="flex flex-wrap items-start justify-between gap-6">
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-                Single Board Kanban
+                Kanban Workspace
               </p>
-              <h1 className="mt-3 font-display text-4xl font-semibold text-[var(--navy-dark)]">
-                {board.title}
-              </h1>
+              <input
+                aria-label="Board title"
+                className="mt-3 w-full max-w-xl bg-transparent font-display text-4xl font-semibold text-[var(--navy-dark)] outline-none"
+                onBlur={() => void saveBoardTitle()}
+                onChange={(event) => setBoardTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") {
+                    setBoardTitle(board.title);
+                    event.currentTarget.blur();
+                  }
+                }}
+                value={boardTitle}
+              />
               <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--gray-text)]">
                 Keep momentum visible. Rename columns, drag cards between stages,
                 and capture quick notes without getting buried in settings.
@@ -170,7 +288,7 @@ export const KanbanBoard = ({
                 Focus
               </p>
               <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
-                One board. Five columns. Zero clutter.
+                Multiple boards. Five columns each. Zero clutter.
               </p>
               {username && onLogout ? (
                 <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--stroke)] pt-4">
@@ -204,17 +322,13 @@ export const KanbanBoard = ({
               </button>
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-4">
-            {board.columns.map((column) => (
-              <div
-                key={column.id}
-                className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)]"
-              >
-                <span className="h-2 w-2 rounded-full bg-[var(--accent-yellow)]" />
-                {column.title}
-              </div>
-            ))}
-          </div>
+          <BoardSwitcher
+            activeBoardId={board.id}
+            boards={boards ?? [summaryFromBoard(board)]}
+            onCreate={handleCreateBoard}
+            onDelete={handleDeleteBoard}
+            onSwitch={setActiveBoardId}
+          />
         </header>
 
         <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -233,16 +347,20 @@ export const KanbanBoard = ({
                     column={column}
                     cards={column.cardIds.map((cardId) => board.cards[cardId])}
                     onRename={(columnId, title) =>
-                      applyMutation(() => renameColumn(columnId, title))
+                      applyMutation(() => renameColumn(board.id, columnId, title))
                     }
                     onAddCard={(columnId, title, details) =>
-                      applyMutation(() => createCard(columnId, title, details))
+                      applyMutation(() =>
+                        createCard(board.id, columnId, title, details)
+                      )
                     }
                     onEditCard={(cardId, title, details) =>
-                      applyMutation(() => editCard(cardId, title, details))
+                      applyMutation(() =>
+                        editCard(board.id, cardId, title, details)
+                      )
                     }
                     onDeleteCard={async (cardId) => {
-                      await applyMutation(() => deleteCard(cardId));
+                      await applyMutation(() => deleteCard(board.id, cardId));
                     }}
                   />
                 ))}
@@ -256,12 +374,94 @@ export const KanbanBoard = ({
               </DragOverlay>
             </DndContext>
           </div>
-          <ChatSidebar onBoardUpdate={setBoard} />
+          <ChatSidebar key={board.id} boardId={board.id} onBoardUpdate={setBoard} />
         </div>
       </main>
     </div>
   );
 };
+
+type FirstBoardPromptProps = {
+  username?: string;
+  onLogout?: () => Promise<void>;
+  error: string | null;
+  onCreate: (title: string) => Promise<boolean>;
+};
+
+const FirstBoardPrompt = ({
+  username,
+  onLogout,
+  error,
+  onCreate,
+}: FirstBoardPromptProps) => {
+  const [title, setTitle] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!title.trim()) return;
+    setIsSaving(true);
+    await onCreate(title.trim());
+    setIsSaving(false);
+  };
+
+  return (
+    <main className="grid min-h-screen place-items-center px-6">
+      <div className="w-full max-w-md rounded-[32px] border border-[var(--stroke)] bg-white p-8 text-center shadow-[var(--shadow)]">
+        {username && onLogout ? (
+          <div className="mb-6 flex items-center justify-between text-xs font-semibold text-[var(--gray-text)]">
+            <span>Signed in as {username}</span>
+            <button
+              className="flex items-center gap-1.5 uppercase tracking-wide text-[var(--secondary-purple)] hover:underline"
+              onClick={onLogout}
+              type="button"
+            >
+              <LogOut aria-hidden="true" size={14} />
+              Log out
+            </button>
+          </div>
+        ) : null}
+        <p className="text-xs font-semibold uppercase tracking-[0.3em] text-[var(--primary-blue)]">
+          Kanban Workspace
+        </p>
+        <h1 className="mt-3 font-display text-3xl font-semibold text-[var(--navy-dark)]">
+          Create your first board
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-[var(--gray-text)]">
+          Give it a name and we will set up five starter columns for you.
+        </p>
+        <form className="mt-6 space-y-3" onSubmit={handleSubmit}>
+          <input
+            className="w-full rounded-2xl border border-[var(--stroke)] px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none focus:border-[var(--primary-blue)]"
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Board name"
+            value={title}
+          />
+          {error ? (
+            <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <button
+            className="flex w-full items-center justify-center gap-2 rounded-full bg-[var(--secondary-purple)] px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
+            disabled={isSaving}
+            type="submit"
+          >
+            <Plus aria-hidden="true" size={16} />
+            {isSaving ? "Creating..." : "Create board"}
+          </button>
+        </form>
+      </div>
+    </main>
+  );
+};
+
+const summaryFromBoard = (data: BoardData): BoardSummary => ({
+  id: data.id,
+  title: data.title,
+  created_at: "",
+  updated_at: "",
+});
 
 const errorMessage = (
   error: unknown,

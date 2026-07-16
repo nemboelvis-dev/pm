@@ -19,11 +19,11 @@ from app.board import (
     CreateCard,
     EditCard,
     MoveCard,
-    board_id_for_user,
     create_card_record,
     delete_card_record,
     edit_card_record,
     move_card_record,
+    owned_board,
     read_board,
 )
 from app.database import connect
@@ -34,7 +34,7 @@ from app.openrouter import (
 )
 
 
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+router = APIRouter(prefix="/api/boards/{board_id}/chat", tags=["chat"])
 PROMPT_HISTORY_LIMIT = 50
 MAX_BOARD_UPDATE_ATTEMPTS = 3
 
@@ -157,23 +157,25 @@ AI_RESPONSE_FORMAT: dict[str, object] = {
 
 
 @router.get("", response_model=list[ChatMessage])
-def history(user: User = Depends(authenticated_user)) -> list[ChatMessage]:
+def history(
+    board_id: int, user: User = Depends(authenticated_user)
+) -> list[ChatMessage]:
     with connect() as connection:
-        return _read_messages(
-            connection, board_id_for_user(connection, user.username)
-        )
+        owned_board(connection, user.username, board_id)
+        return _read_messages(connection, board_id)
 
 
 @router.post("", response_model=ChatResponse)
 async def send_message(
+    board_id: int,
     request: SendMessage,
     user: User = Depends(authenticated_user),
 ) -> ChatResponse:
     with connect() as connection:
-        board = read_board(connection, user.username)
+        board = read_board(connection, user.username, board_id)
         previous_messages = _read_messages(
             connection,
-            board_id_for_user(connection, user.username),
+            board_id,
             limit=PROMPT_HISTORY_LIMIT,
         )
 
@@ -211,7 +213,7 @@ async def send_message(
         ) from error
 
     with connect() as connection:
-        board_id = board_id_for_user(connection, user.username)
+        owned_board(connection, user.username, board_id)
         user_message = _insert_message(
             connection, board_id, "user", request.message
         )
@@ -226,7 +228,7 @@ async def send_message(
         assistant_message = _insert_message(
             connection, board_id, "assistant", update.message
         )
-        refreshed_board = read_board(connection, user.username)
+        refreshed_board = read_board(connection, user.username, board_id)
 
     return ChatResponse(
         user_message=user_message,
