@@ -66,11 +66,15 @@ def test_chat_sends_board_scoped_history_and_strict_schema(
         *,
         response_format: dict[str, object],
         max_tokens: int,
+        frequency_penalty: float,
+        presence_penalty: float,
     ) -> str:
         captured.update(
             messages=messages,
             response_format=response_format,
             max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
         )
         return ai_response("No changes needed.")
 
@@ -114,23 +118,29 @@ def test_chat_sends_board_scoped_history_and_strict_schema(
     assert isinstance(schema, dict)
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"message", "operations"}
-    operation_schema = schema["$defs"]["CardOperation"]
-    assert operation_schema["additionalProperties"] is False
-    assert operation_schema["properties"]["type"]["enum"] == [
-        "create",
-        "edit",
-        "move",
-        "delete",
-    ]
-    assert set(operation_schema["required"]) == {
+    operation_schema = schema["properties"]["operations"]["items"]
+    assert operation_schema["discriminator"]["propertyName"] == "type"
+    operation_definitions = {
+        reference["$ref"].rsplit("/", 1)[-1]
+        for reference in operation_schema["oneOf"]
+    }
+    assert operation_definitions == {
+        "CreateOperation",
+        "EditOperation",
+        "MoveOperation",
+        "DeleteOperation",
+    }
+    for definition_name in operation_definitions:
+        assert schema["$defs"][definition_name]["additionalProperties"] is False
+    assert set(schema["$defs"]["MoveOperation"]["required"]) == {
         "type",
         "card_id",
         "column_id",
         "position",
-        "title",
-        "details",
     }
     assert captured["max_tokens"] == 1000
+    assert captured["frequency_penalty"] == 0.4
+    assert captured["presence_penalty"] == 0.4
 
     history = authenticated_client.get("/api/chat").json()
     assert [(message["role"], message["content"]) for message in history] == [
@@ -155,17 +165,13 @@ def test_chat_applies_multiple_card_operations_and_returns_the_board(
             [
                 {
                     "type": "create",
-                    "card_id": None,
                     "column_id": int(first_column["id"]),
-                    "position": None,
                     "title": "AI-created card",
                     "details": "Created from chat.",
                 },
                 {
                     "type": "edit",
                     "card_id": card_id,
-                    "column_id": None,
-                    "position": None,
                     "title": "AI-edited card",
                     "details": "Edited from chat.",
                 },
@@ -174,8 +180,6 @@ def test_chat_applies_multiple_card_operations_and_returns_the_board(
                     "card_id": card_id,
                     "column_id": int(target_column["id"]),
                     "position": 0,
-                    "title": None,
-                    "details": None,
                 },
             ],
         )
@@ -248,18 +252,12 @@ def test_chat_deletes_and_moves_cards_when_requested(
                 {
                     "type": "delete",
                     "card_id": int(test_card_id),
-                    "column_id": int(backlog["id"]),
-                    "position": len(backlog["cardIds"]),
-                    "title": "test",
-                    "details": "Delete through the assistant.",
                 },
                 {
                     "type": "move",
                     "card_id": int(moved_card_id),
                     "column_id": int(target_column["id"]),
                     "position": len(target_column["cardIds"]),
-                    "title": moved_card["title"],
-                    "details": moved_card["details"],
                 }
             ],
         )
@@ -299,17 +297,13 @@ def test_invalid_ai_operation_rolls_back_all_changes_and_messages(
             [
                 {
                     "type": "create",
-                    "card_id": None,
                     "column_id": column_id,
-                    "position": None,
                     "title": "Rolled-back card",
                     "details": "This should not persist.",
                 },
                 {
                     "type": "edit",
                     "card_id": 999999,
-                    "column_id": None,
-                    "position": None,
                     "title": "Missing",
                     "details": None,
                 },
@@ -347,6 +341,42 @@ def test_invalid_structured_response_is_rejected_without_saving_history(
         "detail": "OpenRouter returned an invalid board update"
     }
     assert authenticated_client.get("/api/chat").json() == []
+
+
+def test_chat_retries_an_invalid_structured_response_once(
+    authenticated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completions = iter(
+        [
+            '{"message":"Missing operations"}',
+            ai_response("No changes needed."),
+        ]
+    )
+    captured_messages: list[list[dict[str, str]]] = []
+
+    async def fake_completion(
+        messages: list[dict[str, str]], **_: object
+    ) -> str:
+        captured_messages.append(messages)
+        return next(completions)
+
+    monkeypatch.setattr(chat, "create_completion", fake_completion)
+
+    response = authenticated_client.post(
+        "/api/chat", json={"message": "Please inspect my board"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"]["content"] == "No changes needed."
+    assert len(captured_messages) == 2
+    assert captured_messages[1][-2] == {
+        "role": "assistant",
+        "content": '{"message":"Missing operations"}',
+    }
+    assert captured_messages[1][-1] == {
+        "role": "user",
+        "content": chat.RESPONSE_CORRECTION_PROMPT,
+    }
 
 
 def test_chat_reports_missing_openrouter_configuration(

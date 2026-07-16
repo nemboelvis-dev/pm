@@ -39,6 +39,8 @@ async def create_completion(
     client: httpx.AsyncClient | None = None,
     response_format: dict[str, object] | None = None,
     max_tokens: int = 64,
+    frequency_penalty: float = 0,
+    presence_penalty: float = 0,
 ) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
@@ -54,6 +56,10 @@ async def create_completion(
         "temperature": 0,
         "max_tokens": max_tokens,
     }
+    if frequency_penalty:
+        payload["frequency_penalty"] = frequency_penalty
+    if presence_penalty:
+        payload["presence_penalty"] = presence_penalty
     if response_format:
         payload["response_format"] = response_format
         payload["provider"] = {"require_parameters": True}

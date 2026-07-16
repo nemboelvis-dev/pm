@@ -1,6 +1,7 @@
 import json
+import logging
 import sqlite3
-from typing import Literal, cast
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import (
@@ -35,14 +36,21 @@ from app.openrouter import (
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 PROMPT_HISTORY_LIMIT = 50
+MAX_BOARD_UPDATE_ATTEMPTS = 3
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are the board assistant for a project management app.
 Use the current board IDs exactly as provided. Card and column IDs are numeric strings;
 return them as integers in operations. You may create, edit, move, or delete cards. You
 cannot rename columns or invent IDs for existing resources. Explain unsupported requests
 without returning an operation for them, and still perform any supported parts of the
-request. Positions are zero-based. Return an empty operations array when no board change
-is needed."""
+request. Use only the fields defined for each operation. Positions are zero-based. Return
+an empty operations array when no board change is needed."""
+
+RESPONSE_CORRECTION_PROMPT = """Your previous response did not match the required JSON
+schema. Return only a corrected board update. Use exactly the fields defined for each
+operation type and preserve the user's requested changes."""
 
 
 class SendMessage(BaseModel):
@@ -64,83 +72,55 @@ class ChatMessage(BaseModel):
     created_at: str
 
 
-class CardOperation(BaseModel):
+class OperationBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["create", "edit", "move", "delete"] = Field(
-        description="The card operation to apply."
-    )
-    card_id: int | None = Field(
-        gt=0, description="Existing card ID for edit, move, or delete; otherwise null."
-    )
-    column_id: int | None = Field(
-        gt=0, description="Target column ID for create or move; otherwise null."
-    )
-    position: int | None = Field(
-        ge=0, description="Zero-based target position for move; otherwise null."
-    )
-    title: str | None = Field(
-        description="Card title for create, changed title for edit, or null."
-    )
-    details: str | None = Field(
-        description="Card details for create, changed details for edit, or null."
-    )
 
-    @model_validator(mode="before")
+class CreateOperation(OperationBase):
+    type: Literal["create"] = Field(description="Create a card.")
+    column_id: int = Field(gt=0, description="Target column ID.")
+    title: str = Field(description="New card title.")
+    details: str = Field(description="New card details; use an empty string if absent.")
+
+    @field_validator("title")
     @classmethod
-    def ignore_unused_fields(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
+    def title_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title must not be blank")
+        return value
 
-        operation = value.copy()
-        unused_fields = {
-            "create": ("card_id", "position"),
-            "edit": ("column_id", "position"),
-            "move": ("title", "details"),
-            "delete": ("column_id", "position", "title", "details"),
-        }
-        for field in unused_fields.get(operation.get("type"), ()):
-            operation[field] = None
-        return operation
+
+class EditOperation(OperationBase):
+    type: Literal["edit"] = Field(description="Edit a card.")
+    card_id: int = Field(gt=0, description="Existing card ID.")
+    title: str | None = Field(description="Changed title, or null if unchanged.")
+    details: str | None = Field(description="Changed details, or null if unchanged.")
 
     @model_validator(mode="after")
-    def fields_match_operation(self) -> "CardOperation":
-        if self.type == "create":
-            valid = (
-                self.card_id is None
-                and self.column_id is not None
-                and self.position is None
-                and self.title is not None
-                and bool(self.title.strip())
-                and self.details is not None
-            )
-        elif self.type == "edit":
-            valid = (
-                self.card_id is not None
-                and self.column_id is None
-                and self.position is None
-                and (self.title is not None or self.details is not None)
-                and (self.title is None or bool(self.title.strip()))
-            )
-        elif self.type == "move":
-            valid = (
-                self.card_id is not None
-                and self.column_id is not None
-                and self.position is not None
-                and self.title is None
-                and self.details is None
-            )
-        else:
-            valid = (
-                self.card_id is not None
-                and self.column_id is None
-                and self.position is None
-                and self.title is None
-                and self.details is None
-            )
-        if not valid:
-            raise ValueError(f"Fields do not match the {self.type} operation")
+    def at_least_one_changed_field(self) -> "EditOperation":
+        if self.title is None and self.details is None:
+            raise ValueError("At least one changed field is required")
+        if self.title is not None and not self.title.strip():
+            raise ValueError("Title must not be blank")
         return self
+
+
+class MoveOperation(OperationBase):
+    type: Literal["move"] = Field(description="Move a card.")
+    card_id: int = Field(gt=0, description="Existing card ID.")
+    column_id: int = Field(gt=0, description="Target column ID.")
+    position: int = Field(ge=0, description="Zero-based target position.")
+
+
+class DeleteOperation(OperationBase):
+    type: Literal["delete"] = Field(description="Delete a card.")
+    card_id: int = Field(gt=0, description="Existing card ID.")
+
+
+CardOperation = Annotated[
+    CreateOperation | EditOperation | MoveOperation | DeleteOperation,
+    Field(discriminator="type"),
+]
 
 
 class AiBoardUpdate(BaseModel):
@@ -213,12 +193,7 @@ async def send_message(
     ]
 
     try:
-        completion = await create_completion(
-            messages,
-            response_format=AI_RESPONSE_FORMAT,
-            max_tokens=1000,
-        )
-        update = AiBoardUpdate.model_validate_json(completion)
+        update = await _request_board_update(messages)
     except OpenRouterConfigurationError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -260,6 +235,40 @@ async def send_message(
     )
 
 
+async def _request_board_update(
+    messages: list[dict[str, str]],
+) -> AiBoardUpdate:
+    request_messages = list(messages)
+    for attempt in range(MAX_BOARD_UPDATE_ATTEMPTS):
+        completion = await create_completion(
+            request_messages,
+            response_format=AI_RESPONSE_FORMAT,
+            max_tokens=1000,
+            frequency_penalty=0.4,
+            presence_penalty=0.4,
+        )
+        try:
+            return AiBoardUpdate.model_validate_json(completion)
+        except ValidationError:
+            if attempt + 1 == MAX_BOARD_UPDATE_ATTEMPTS:
+                logger.error(
+                    "OpenRouter board update failed validation after %d attempts; "
+                    "last raw completion: %s",
+                    MAX_BOARD_UPDATE_ATTEMPTS,
+                    completion,
+                )
+                raise
+            logger.warning("Retrying OpenRouter after an invalid board update")
+            request_messages.extend(
+                [
+                    {"role": "assistant", "content": completion},
+                    {"role": "user", "content": RESPONSE_CORRECTION_PROMPT},
+                ]
+            )
+
+    raise RuntimeError("Unreachable")
+
+
 def _apply_operation(
     connection: sqlite3.Connection, board_id: int, operation: CardOperation
 ) -> None:
@@ -268,33 +277,33 @@ def _apply_operation(
             connection,
             board_id,
             CreateCard(
-                column_id=cast(int, operation.column_id),
-                title=cast(str, operation.title),
-                details=cast(str, operation.details),
+                column_id=operation.column_id,
+                title=operation.title,
+                details=operation.details,
             ),
         )
     elif operation.type == "edit":
         edit_card_record(
             connection,
             board_id,
-            cast(int, operation.card_id),
+            operation.card_id,
             EditCard(title=operation.title, details=operation.details),
         )
     elif operation.type == "move":
         move_card_record(
             connection,
             board_id,
-            cast(int, operation.card_id),
+            operation.card_id,
             MoveCard(
-                column_id=cast(int, operation.column_id),
-                position=cast(int, operation.position),
+                column_id=operation.column_id,
+                position=operation.position,
             ),
         )
     else:
         delete_card_record(
             connection,
             board_id,
-            cast(int, operation.card_id),
+            operation.card_id,
         )
 
 

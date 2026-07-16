@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
+import { GripVertical, Pencil, Trash2 } from "lucide-react";
 import type { Card } from "@/lib/kanban";
 
 type KanbanCardProps = {
@@ -91,8 +92,8 @@ export const KanbanCard = ({ card, onDelete, onEdit }: KanbanCardProps) => {
         </form>
       ) : (
         <>
-          <div className="flex items-start justify-between gap-3">
-            <div>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
               <h4 className="font-display text-base font-semibold text-[var(--navy-dark)]">
                 {card.title}
               </h4>
@@ -101,31 +102,34 @@ export const KanbanCard = ({ card, onDelete, onEdit }: KanbanCardProps) => {
               </p>
             </div>
             <button
-              className="cursor-grab rounded-full border border-transparent px-2 py-1 text-xs font-semibold text-[var(--gray-text)] hover:border-[var(--stroke)] active:cursor-grabbing"
+              className="flex shrink-0 cursor-grab items-center justify-center rounded-full p-1.5 text-[var(--gray-text)] transition hover:bg-[var(--surface)] active:cursor-grabbing"
               aria-label={`Drag ${card.title}`}
+              title="Drag to move"
               type="button"
               {...attributes}
               {...listeners}
             >
-              Drag
+              <GripVertical aria-hidden="true" size={16} />
             </button>
           </div>
-          <div className="mt-3 flex gap-3 border-t border-[var(--stroke)] pt-3">
+          <div className="mt-3 flex items-center justify-end gap-1 border-t border-[var(--stroke)] pt-2">
             <button
               type="button"
               onClick={startEditing}
-              className="text-xs font-semibold text-[var(--primary-blue)] hover:underline"
+              className="rounded-full p-1.5 text-[var(--gray-text)] transition hover:bg-[var(--surface)] hover:text-[var(--primary-blue)]"
               aria-label={`Edit ${card.title}`}
+              title="Edit"
             >
-              Edit
+              <Pencil aria-hidden="true" size={15} />
             </button>
             <button
               type="button"
               onClick={() => void onDelete(card.id)}
-              className="text-xs font-semibold text-[var(--gray-text)] hover:text-[var(--navy-dark)] hover:underline"
+              className="rounded-full p-1.5 text-[var(--gray-text)] transition hover:bg-red-50 hover:text-red-600"
               aria-label={`Delete ${card.title}`}
+              title="Delete"
             >
-              Remove
+              <Trash2 aria-hidden="true" size={15} />
             </button>
           </div>
         </>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Send } from "lucide-react";
 import {
   ApiError,
   getChatHistory,
@@ -177,10 +178,11 @@ export const ChatSidebar = ({ onBoardUpdate }: ChatSidebarProps) => {
           value={draft}
         />
         <button
-          className="mt-3 w-full rounded-full bg-[var(--secondary-purple)] px-5 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-[var(--secondary-purple)] px-5 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!draft.trim() || isSending}
           type="submit"
         >
+          <Send aria-hidden="true" size={14} />
           {isSending ? "Sending..." : "Send message"}
         </button>
       </form>
